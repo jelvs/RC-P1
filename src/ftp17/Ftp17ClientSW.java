@@ -8,6 +8,7 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
+import java.util.SortedMap;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -30,7 +31,10 @@ public class Ftp17ClientSW {
 	private BlockingQueue<Ftp17Packet> receiverQueue;
 	volatile private SocketAddress srvAddress;
 	
-
+	private SortedMap<Long, Ftp17Packet> window;
+	long byteCount = 1;
+	
+	
 	Ftp17ClientSW(String filename, SocketAddress srvAddress) {
 		this.filename = filename;
 		this.srvAddress = srvAddress;
