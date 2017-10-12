@@ -8,7 +8,10 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.SortedMap;
+import java.util.TreeMap;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -19,7 +22,7 @@ public class Ftp17ClientSW {
 	static final int DEFAULT_TIMEOUT = 1000;
 	static final int DEFAULT_MAX_RETRIES = 5;
 	private static final int DEFAULT_BLOCK_SIZE = 1024;
-	static int WindowSize = DEFAULT_BLOCK_SIZE; // this client is a stop and wait one
+	static int WindowSize = 5; // this client is a stop and wait one
 	static int BlockSize = DEFAULT_BLOCK_SIZE;
 	static int Timeout = DEFAULT_TIMEOUT;
 	
@@ -31,13 +34,18 @@ public class Ftp17ClientSW {
 	private BlockingQueue<Ftp17Packet> receiverQueue;
 	volatile private SocketAddress srvAddress;
 	
+	private boolean finished;
 	private SortedMap<Long, Ftp17Packet> window;
+	private List<Long> PacketsSent;
 	long byteCount = 1;
 	
 	
 	Ftp17ClientSW(String filename, SocketAddress srvAddress) {
 		this.filename = filename;
 		this.srvAddress = srvAddress;
+		window = new TreeMap <Long, Ftp17Packet>();
+		PacketsSent = new ArrayList<Long>(WindowSize);
+		
 	}
 
 	void sendFile() {
@@ -75,16 +83,32 @@ public class Ftp17ClientSW {
 			sendRetry(new UploadPacket(filename), 1L, DEFAULT_MAX_RETRIES);
 
 			try {
+				
 				FileInputStream f = new FileInputStream(filename);
-				long nextByte = 1L; // block byte count starts at 1
-				// read and send blocks
-				int n;
-				byte[] buffer = new byte[BlockSize];
-				while ((n = f.read(buffer)) > 0) {
-					sendRetry(new DataPacket(nextByte, buffer, n), nextByte + n, DEFAULT_MAX_RETRIES);
-					nextByte += n;
-					stats.newPacketSent(n);
+				long nextByte = 1L;
+				while (f.available()>0 || !window.isEmpty()) {
+					// block byte count starts at 1
+					// read and send blocks
+					int n;
+					byte[] buffer = new byte[BlockSize];
+					try {
+						while(window.size() < WindowSize) {
+							if ((n = f.read(buffer)) > 0) {
+								Ftp17Packet pkt = new DataPacket(nextByte, buffer, n);
+								nextByte += n;
+								stats.newPacketSent(n);
+								window.put(nextByte, pkt);
+								
+							}
+						}
+						
+					}
+					catch (Exception e) {
+						e.printStackTrace();
 				}
+				sendWindow();	
+				
+			}
 				// send the FIN packet
 				System.err.println("sending: " + new FinPacket(nextByte));
 				socket.send(new FinPacket(nextByte).toDatagram(srvAddress));
@@ -134,6 +158,21 @@ public class Ftp17ClientSW {
 		}
 		throw new IOException("too many retries");
 	}
+	
+	void sendWindow() throws IOException {
+		
+		for(Long seq : window.keySet()) {
+			Ftp17Packet pkt = window.get(seq);
+			
+			window.remove(seq);
+		}
+		
+		
+		
+	}
+	
+			
+		
 
 	class Stats {
 		private long totalRtt = 0;
