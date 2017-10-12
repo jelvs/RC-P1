@@ -25,27 +25,27 @@ public class Ftp17ClientSW {
 	static int WindowSize = 5; // this client is a stop and wait one
 	static int BlockSize = DEFAULT_BLOCK_SIZE;
 	static int Timeout = DEFAULT_TIMEOUT;
-	
-	
+
+
 
 	private Stats stats;
 	private String filename;
 	private DatagramSocket socket;
 	private BlockingQueue<Ftp17Packet> receiverQueue;
 	volatile private SocketAddress srvAddress;
-	
+
 	private boolean finished;
 	private SortedMap<Long, Ftp17Packet> window;
 	private List<Long> PacketsSent;
 	long byteCount = 1;
-	
-	
+
+
 	Ftp17ClientSW(String filename, SocketAddress srvAddress) {
 		this.filename = filename;
 		this.srvAddress = srvAddress;
 		window = new TreeMap <Long, Ftp17Packet>();
 		PacketsSent = new ArrayList<Long>(WindowSize);
-		
+
 	}
 
 	void sendFile() {
@@ -83,7 +83,7 @@ public class Ftp17ClientSW {
 			sendRetry(new UploadPacket(filename), 1L, DEFAULT_MAX_RETRIES);
 
 			try {
-				
+
 				FileInputStream f = new FileInputStream(filename);
 				long nextByte = 1L;
 				while (f.available()>0 || !window.isEmpty()) {
@@ -98,17 +98,17 @@ public class Ftp17ClientSW {
 								nextByte += n;
 								stats.newPacketSent(n);
 								window.put(nextByte, pkt);
-								
+
 							}
 						}
-						
+
 					}
 					catch (Exception e) {
 						e.printStackTrace();
+					}
+					sendWindow();	
+
 				}
-				sendWindow();	
-				
-			}
 				// send the FIN packet
 				System.err.println("sending: " + new FinPacket(nextByte));
 				socket.send(new FinPacket(nextByte).toDatagram(srvAddress));
@@ -158,21 +158,27 @@ public class Ftp17ClientSW {
 		}
 		throw new IOException("too many retries");
 	}
-	
+
 	void sendWindow() throws IOException {
-		
+
 		for(Long seq : window.keySet()) {
 			Ftp17Packet pkt = window.get(seq);
+
+			if(!PacketsSent.contains(seq)){
 			
-			window.remove(seq);
+				System.err.println("sending: " + (pkt.getSeqN()) + " expecting:" + (seq));
+				//metodo que falta criar 
+				socket.send(pkt.toDatagram( srvAddress ));
+				PacketsSent.add(seq);
+			}
+
+
+
 		}
-		
-		
-		
 	}
-	
-			
-		
+
+
+
 
 	class Stats {
 		private long totalRtt = 0;
@@ -260,7 +266,7 @@ public class Ftp17ClientSW {
 			putBytes(payload, length);
 		}
 	}
-	
+
 	static class FinPacket extends Ftp17Packet {
 		FinPacket(long seqN) {
 			putShort(FIN);
