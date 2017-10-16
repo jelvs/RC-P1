@@ -27,7 +27,6 @@ public class Ftp17ClientSW {
 	static int Timeout = DEFAULT_TIMEOUT;
 
 
-
 	private Stats stats;
 	private String filename;
 	private DatagramSocket socket;
@@ -87,26 +86,32 @@ public class Ftp17ClientSW {
 					+ socket.getLocalPort() + "\n");
 
 			sendRetry(new UploadPacket(filename), 1L, DEFAULT_MAX_RETRIES);
-
+			
 			try {
 
 				FileInputStream f = new FileInputStream(filename);
 				long nextByte = 1L;
 				while (f.available()>0 || !window.isEmpty()) {
+					
 					// block byte count starts at 1
 					// read and send blocks
 					int n;
+					
 					byte[] buffer = new byte[BlockSize];
 					try {
-						while(window.size() < WindowSize && !finished) {
+						while(window.size() < WindowSize) {
+							System.out.println("hello it's me");
 							if ((n = f.read(buffer)) > 0) {
 								Ftp17Packet pkt = new DataPacket(nextByte, buffer, n);
 								nextByte += n;
 								stats.newPacketSent(n);
 								window.put(nextByte, pkt);
-
+								
 							}
+							else
+								break;
 						}
+						
 
 					}
 					catch (Exception e) {
@@ -114,15 +119,16 @@ public class Ftp17ClientSW {
 					}
 
 					sendWindow();//send data from window	
+					
 					handleACK(byteCount, DEFAULT_MAX_RETRIES);
-
-
-
-
-
-
-
+					
+					
+			
+					
 				}
+				System.out.println(" window" + window.size());
+				
+				
 				// send the FIN packet
 				System.err.println("sending: " + new FinPacket(nextByte));
 				socket.send(new FinPacket(nextByte).toDatagram(srvAddress));
@@ -132,6 +138,7 @@ public class Ftp17ClientSW {
 
 			} catch (Exception e) {
 				System.err.println("failed with error \n" + e.getMessage());
+				e.printStackTrace();
 				System.exit(0);
 			}
 			socket.close();
@@ -155,7 +162,7 @@ public class Ftp17ClientSW {
 			socket.send( pkt.toDatagram( srvAddress ));
 
 			Ftp17Packet ack = receiverQueue.poll(Timeout, TimeUnit.MILLISECONDS);
-			if (ack != null)
+			if (ack != null) {
 				if (ack.getOpcode() == ACK)
 					if (expectedACK == ack.getSeqN()) {
 						stats.newTimeoutMeasure(System.currentTimeMillis() - sendTime);
@@ -167,6 +174,7 @@ public class Ftp17ClientSW {
 				else {
 					System.err.println("got unexpected packet (error)");
 				}
+			}
 			else
 				System.err.println("timeout...");
 		}
@@ -182,7 +190,7 @@ public class Ftp17ClientSW {
 			if(!PacketsSent.contains(seq)){
 
 				System.err.println("sending: " + (pkt.getSeqN()) + " expecting:" + (seq));
-				//metodo que falta criar 
+
 				socket.send(pkt.toDatagram( srvAddress ));
 				PacketsSent.add(seq);
 				PacketsSentTime.add(System.currentTimeMillis());
@@ -196,17 +204,18 @@ public class Ftp17ClientSW {
 	void timeout(long time) {
 		PropagatedTime += (System.currentTimeMillis() - time);
 		Timeout = (int)(PropagatedTime/numAcks + 20);
-		System.out.println("TimeOut = " + Timeout);
+		//System.out.println("\n"+ "TimeOut = " + Timeout);
 
 	}
 
 	void handleSlide(long seqNumber) {
 		int p = 0;
+		
 		while(p < PacketsSent.size()) {
 			if(seqNumber >= PacketsSent.get(p)){
 				window.remove(PacketsSent.get(p));
 				PacketsSent.remove(p);
-
+				//System.out.println(p);
 				PacketsSentTime.remove(p);
 			}
 			p++;
@@ -215,45 +224,58 @@ public class Ftp17ClientSW {
 	}
 
 	void handleACK(long expectedAck, int retries) throws Exception {
-		Ftp17Packet ack = receiverQueue.poll(Timeout, TimeUnit.MILLISECONDS); 
-		//for(int i=0; i< retries; i++){
 
-			//for(int j=0; j < PacketsSent.size(); j++) {
-				//Long seq = PacketsSent.get(j);
-				if(ack != null) {
-					if(ack.getOpcode() == ACK) {
-						if(ack.getSeqN()!= -1) {
-							if(window.containsKey(ack.getSeqN())) {
-								numAcks++;
-								handleSlide(ack.getSeqN());
+		long sendTime = System.currentTimeMillis();
+		
+		
+		while((sendTime + Timeout) - System.currentTimeMillis() > 0) {
+			
+			Ftp17Packet ack = receiverQueue.poll(Timeout, TimeUnit.MILLISECONDS); 
+			
+			if(ack != null) {
+				if(ack.getOpcode() == ACK) {
+					if(ack.getSeqN()!= -1) {
+						if(window.containsKey(ack.getSeqN())) {
+							numAcks++;
+							for (int i=0; i< PacketsSent.size();i++) {
+								if(PacketsSent.get(i) == ack.getSeqN()) {
+									timeout(PacketsSentTime.get(i));
+									break;
+								}
 							}
-
-							//stats.newTimeoutMeasure(System.currentTimeMillis() - sendTime);
-
+							handleSlide(ack.getSeqN());
 						}
-						else {
-							//reset window
-							System.err.println("got wrong ack");
-						}
+
+						stats.newTimeoutMeasure(System.currentTimeMillis() - sendTime);
+
 					}
 					else {
 						//reset window
-						System.err.println("got unexpected packet (error)");
+						System.err.println("got wrong ack");
+						
 					}
 				}
 				else {
 					//reset window
-					//TimeOut , apagar data e enviar outra vez
-					System.err.println("timeout...");
-					PacketsSent= new ArrayList<Long> (WindowSize);
-					PacketsSentTime = new ArrayList<Long> (WindowSize);
-
+					System.err.println("got unexpected packet (error)");
+					
 				}
-			
-			throw new IOException("too many retries");
-		}
+			}
 
-	
+			else {
+				//reset window
+				//TimeOut , apagar data e enviar outra vez
+				//System.err.println("timeout...");
+				
+				PacketsSent= new ArrayList<Long> (WindowSize);
+				PacketsSentTime = new ArrayList<Long> (WindowSize);
+				
+			}
+		}
+		
+	}
+
+
 
 
 
