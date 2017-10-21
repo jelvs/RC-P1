@@ -118,7 +118,7 @@ public class Ftp17Client {
 
 						//send data from window
 						sendWindow();
-
+                        //handle acks received
 						handleACK(byteCount, DEFAULT_MAX_RETRIES);	
 
 
