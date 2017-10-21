@@ -86,7 +86,7 @@ public class Ftp17Server implements Runnable {
 
 					// is the data packet outside the window ?
 					if (pkt.getSeqN() < expectedByte || pkt.getSeqN() > expectedByte + windowSize) {
-						System.err.println("received packet out of window, ignoring...");
+						System.err.println("received packet out of window, ignoring... " + pkt.getSeqN() );
 						socket.send(new AckPacket(expectedByte, pkt.getScratchPad(), true).toDatagram(cltAddr));
 						continue;
 					}

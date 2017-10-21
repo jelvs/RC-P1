@@ -16,13 +16,12 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
 
-import ftp17.Ftp17Server.AckPacket;
 
 public class Ftp17Client {
 	static final int DEFAULT_TIMEOUT = 1000;
 	static final int DEFAULT_MAX_RETRIES = 7;
 	private static final int DEFAULT_BLOCK_SIZE = 1024;
-	static int WindowSize = 5; // this client is a stop and wait one
+	static int WindowSize;
 	static int BlockSize = DEFAULT_BLOCK_SIZE;
 	static int Timeout = DEFAULT_TIMEOUT;
 
@@ -34,12 +33,14 @@ public class Ftp17Client {
 	volatile private SocketAddress srvAddress;
 
 	private SortedMap<Long, Ftp17Packet> window;
+	private int windowResize = 1;
+
 	private List<Long> PacketsSent;
 	private List<Long> PacketsSentTime;
 
 	long byteCount = 1;
-	private long PropagatedTime;
-	private long numAcks;
+	private long Time;
+	private long acks;
 	private boolean finished;
 
 
@@ -50,6 +51,7 @@ public class Ftp17Client {
 		window = new TreeMap <Long, Ftp17Packet>();
 		PacketsSent = new ArrayList<Long>(WindowSize);
 		PacketsSentTime = new ArrayList<Long>(WindowSize);
+		WindowSize = 5;
 
 	}
 
@@ -94,15 +96,13 @@ public class Ftp17Client {
 				long nextByte = 1L;
 				while (f.available()>0 || !window.isEmpty()) {
 
-					// block byte count starts at 1
-					// read and send blocks
 					int n;
-
 					byte[] buffer = new byte[BlockSize];
+
 					try {
 
 						while(window.size() < WindowSize ) {
-							//System.out.println("hello it's me");
+							//fills all the freeSlots
 							if ((n = f.read(buffer)) > 0) {
 								Ftp17Packet pkt = new DataPacket(nextByte, buffer, n);
 								nextByte += n;
@@ -115,8 +115,13 @@ public class Ftp17Client {
 
 								break;
 						}
+
+						//send data from window
 						sendWindow();
-						handleACK(byteCount, DEFAULT_MAX_RETRIES);
+
+						handleACK(byteCount, DEFAULT_MAX_RETRIES);	
+
+
 
 
 					}
@@ -124,12 +129,10 @@ public class Ftp17Client {
 						e.printStackTrace();
 					}
 
-					//send data from window	
 
-					handleACK(byteCount, DEFAULT_MAX_RETRIES);
 
 				}
-				//System.out.println(" window" + window.size());
+
 
 
 				// send the FIN packet
@@ -187,11 +190,11 @@ public class Ftp17Client {
 	}
 
 	void sendWindow() throws IOException {
-		int counter = 0;
+
 		for(Long seq : window.keySet()) {
 
 			Ftp17Packet pkt = window.get(seq);
-			counter ++;
+
 			if(!PacketsSent.contains(seq)){
 
 				System.err.println("sending: " + (pkt.getSeqN()) + " expecting:" + (seq));
@@ -200,39 +203,32 @@ public class Ftp17Client {
 				PacketsSent.add(seq);
 				PacketsSentTime.add(System.currentTimeMillis());
 			}
-			if(counter == WindowSize){
-				break;
-			}
 
 
 
 		}
 	}
 
-	void timeout(long time) {
-		PropagatedTime += (System.currentTimeMillis() - time);
-		Timeout = (int)(PropagatedTime/numAcks + 20);
-		//System.out.println("\n"+ "TimeOut = " + Timeout);
 
-	}
-
+	/*
+	 * * Move window after receiving an acknowledge
+	 */
 	void handleSlide(long seqNumber) {
 		int p = 0;
-
 		while(p < PacketsSent.size()) {
+
 			if(seqNumber >= PacketsSent.get(p)){
+
 				window.remove(PacketsSent.get(p));
 				PacketsSent.remove(p);
-				//System.out.println(p);
+
+				stats.newTimeoutMeasure(System.currentTimeMillis() - PacketsSentTime.get(p));
 				PacketsSentTime.remove(p);
-				
 			}
 			p++;
-			
+
 		}
-		if(window.size() > WindowSize){
-			return;
-		}
+
 
 	}
 
@@ -245,57 +241,69 @@ public class Ftp17Client {
 				if(ack.getOpcode() == FINACK) {
 					return;
 				}
+
 				else {
 					System.err.println("sending: " + new FinPacket(expectedACK));
 					socket.send(new FinPacket(expectedACK).toDatagram(srvAddress));
 				}			
+
 			}
 		}
 
 		if(ack != null) {
-			if(ack.getOpcode() == ACK) {
+			if(ack.getOpcode() == ACK ) {
 				if(ack.getSeqN()!= -1) {
-					
+
 					if(window.containsKey(ack.getSeqN())) {
-						numAcks++;
-						
+						acks++;
+
 						for (int i=0; i< PacketsSent.size();i++) {
 							if(PacketsSent.get(i) == ack.getSeqN()) {
-								timeout(PacketsSentTime.get(i));
+								Time += (System.currentTimeMillis() - PacketsSentTime.get(i));
+								Timeout = (int)(Time/acks);
+
 								break;
+
 							}
+
+						}
+						handleSlide(ack.getSeqN());
+						windowResize++;
+						//Update window
+						if(windowResize>2) {
+							if(WindowSize < 26) {
+								WindowSize = WindowSize * 2;
+								stats.newWindowSize(WindowSize);	
+
+
+							}else	
+								return;
 						}
 
-						
-						handleSlide(ack.getSeqN());
-						
-						
-						
 					} else {
-						//reset window
-						
-						System.err.println("got wrong ack");
-						
+						windowResize = 1;
+						System.err.println("got wrong ack");		
 					}
-					//stats.newTimeoutMeasure(System.currentTimeMillis() - sendTime);
-				}else {
-					//reset window
-					PacketsSent.clear();
-					System.err.println("Packet Lost");
+
 				}
 			}else {
-				//reset window
+				windowResize = 1;
 				System.err.println("got unexpected packet (error)");
 			}
-		}else {
-			//reset window
-			//TimeOut , apagar data e enviar outra vez
-			System.err.println("timeout...");
 
+		}else {
+			//Timeout, Resend Window
+			windowResize = 1;
+			WindowSize = WindowSize/2;
+			System.err.println("timeout...");
+			Timeout=DEFAULT_TIMEOUT;
 			PacketsSent= new ArrayList<Long> (WindowSize);
 			PacketsSentTime = new ArrayList<Long> (WindowSize);
 
+
 		}
+
+
 	}
 
 
@@ -308,9 +316,11 @@ public class Ftp17Client {
 		private long totalRtt = 0;
 		private int timesMeasured = 0;
 		private int window = WindowSize;
+		private int windowSizes = WindowSize;
 		private int totalPackets = 0;
 		private int totalBytes = 0;
 		private long startTime = 0L;;
+
 
 		Stats() {
 			startTime = System.currentTimeMillis();
@@ -326,18 +336,33 @@ public class Ftp17Client {
 			totalRtt += t;
 		}
 
+
+		void newWindowSize(int n) { // to get the windowSize average
+			window++;
+			windowSizes += n;
+		}
+
+
+
+
 		void printReport() {
 			// compute time spent receiving bytes
 			int milliSeconds = (int) (System.currentTimeMillis() - startTime);
 			float speed = (float) (totalBytes * 8.0 / milliSeconds / 1000); // M bps
 			float averageRtt = (float) totalRtt / timesMeasured;
+			float averageWindow = (float) (windowSizes / window);
 			System.out.println("\nTransfer stats:");
 			System.out.println("\nFile size:\t\t\t" + totalBytes);
 			System.out.println("Packets sent:\t\t\t" + totalPackets);
+			System.out.println("Average Timeout:\t\t" + Timeout);
 			System.out.printf("End-to-end transfer time:\t%.3f s\n", (float) milliSeconds / 1000);
 			System.out.printf("End-to-end transfer speed:\t%.3f M bps\n", speed);
 			System.out.printf("Average rtt:\t\t\t%.3f ms\n", averageRtt);
 			System.out.printf("Sending window size:\t\t%d packet(s)\n\n", window);
+			System.out.printf("Sending average window size:\t\t%.1f packet(s)\n\n", averageWindow);
+
+
+
 		}
 	}
 
@@ -348,7 +373,7 @@ public class Ftp17Client {
 			switch (args.length) {
 			case 5:
 				// Ignored for S/W Client
-				// WindowSize = Integer.parseInt(args[4]);
+				WindowSize = Integer.parseInt(args[4]);
 			case 4:
 				BlockSize = Integer.valueOf(args[3]);
 				// BlockSize must be at least 1
